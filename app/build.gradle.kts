@@ -17,6 +17,30 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "1.0"
+
+        // 只编译 arm64-v8a：覆盖绝大多数现代手机，构建更快、失败点更少
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
+
+        // 挂上 CMake（Native 卡密校验核心）
+        externalNativeBuild {
+            cmake {
+                arguments += listOf(
+                    "-DANDROID_STL=c++_static",
+                    "-DCMAKE_BUILD_TYPE=Release"
+                )
+                cppFlags += "-O2"
+            }
+        }
+    }
+
+    // 指定 CMakeLists.txt 位置
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildTypes {

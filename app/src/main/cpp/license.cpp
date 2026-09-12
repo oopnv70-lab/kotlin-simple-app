@@ -1,0 +1,207 @@
+// license.cpp
+// 卡密校验核心（Native 实现）
+//
+// 设计目标：静态与动态差距极大
+//  - 静态（IDA/Ghidra 读 .so）：只能看到一组无意义的整数种子、一堆乱码字节、
+//    以及一颗不可逆摘要；无法直接读出卡密，也无法一眼看出盐是什么。
+//  - 动态：运行时才把盐派生出来、把明文拼装出来，然后做 10 万次迭代 SHA-256 比对。
+//
+// 防护点：
+//  1. 盐（SALT）不落库，由 SEED 整数数组运行时派生。
+//  2. 明文卡密不落库，由 ENC 字节数组与 MASK 异或后拼装。
+//  3. 10 万次迭代哈希，拉高暴力枚举成本。
+//  4. 反调试哨兵：检测 TracerPid / Frida，命中即让校验恒失败（温和）。
+//  5. 双层校验：先验"程序自身未被篡改/未在调试"，再验输入。
+
+#include <jni.h>
+#include <cstdint>
+#include <cstring>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+#include <unistd.h>
+#include <sys/types.h>
+#include <android/log.h>
+
+#include "sha256.h"
+
+#define LOG_TAG "LicenseNative"
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+
+namespace {
+
+// ======================= 机密素材（静态看到的是无意义数字/乱码） =======================
+
+// 种子：用于运行时派生盐
+static const uint32_t SEED[5] = { 0x5A49D3u, 0x2D37A1u, 0x9C11F0u, 0x40B75Eu, 0x1E93C2u };
+
+// 明文卡密经"异或掩码"后的密文数组（长度 22）
+static const uint8_t ENC[22] = {
+    0x64,0x12,0x8C,0x5E,0xD5,0x67,0x50,0x76,0x98,0x21,0x58,
+    0xDD,0x67,0xD9,0x6C,0xDB,0x1E,0xFD,0x4F,0x25,0x87,0x4B
+};
+
+// 掩码：与 ENC 异或还原明文
+static const uint8_t MASK[22] = {
+    0x37,0x5B,0xC1,0x0E,0x99,0x22,0x7D,0x44,0xA8,0x13,0x6E,
+    0xF0,0x2C,0x81,0x55,0x9D,0x33,0xBA,0x07,0x6A,0xD4,0x1F
+};
+
+// 期望摘要（不可逆；迭代 100000 次）
+static const uint8_t EXPECTED[32] = {
+    0x7c,0xa6,0x47,0xa2,0x04,0xf2,0x7d,0x62,0x35,0x70,0x20,0xd9,0x09,0x5d,0x94,0x81,
+    0xe0,0xe2,0x04,0xe5,0x4c,0xaf,0x02,0xb6,0xa0,0xd0,0x6b,0x3b,0xa9,0x25,0x1f,0xf4
+};
+
+// 迭代次数：10 万
+static const int ITER = 100000;
+
+// ======================= 运行时派生 =======================
+
+// 由 SEED 派生盐（与设计稿严格一致；静态难以一眼还原）
+void deriveSalt(uint8_t out[10]) {
+    uint32_t acc = 0x9E3779B9u;
+    int n = 0;
+    for (int i = 0; i < 5; ++i) {
+        acc = (acc << 5) | (acc >> 27);
+        acc ^= (SEED[i] * 0x101u + (uint32_t)i * 0x7Fu);
+        for (int j = 0; j < 2; ++j) {
+            acc = (acc << 7) | (acc >> 25);
+            out[n++] = (uint8_t)((acc >> (8 * ((i + j) % 4))) & 0xFF);
+        }
+    }
+}
+
+// 运行时拼装明文卡密（不落库）
+void assembleKey(uint8_t out[22]) {
+    for (int i = 0; i < 22; ++i) out[i] = (uint8_t)(ENC[i] ^ MASK[i]);
+}
+
+// ======================= 迭代哈希 =======================
+
+// 对 data 做 ITER 次 SHA-256，输出 32 字节
+void iterHash(const uint8_t* data, size_t len, uint8_t out[32]) {
+    uint8_t h[32];
+    lsha::digest(data, len, h);
+    for (int i = 1; i < ITER; ++i) {
+        uint8_t tmp[32];
+        lsha::digest(h, 32, tmp);
+        memcpy(h, tmp, 32);
+    }
+    memcpy(out, h, 32);
+}
+
+// 定长比较（防时序侧信道）
+bool equals32(const uint8_t* a, const uint8_t* b) {
+    uint8_t d = 0;
+    for (int i = 0; i < 32; ++i) d |= (uint8_t)(a[i] ^ b[i]);
+    return d == 0;
+}
+
+// ======================= 反调试 =======================
+
+// 读取 /proc/self/status 中的 TracerPid
+bool tracerPidNonZero() {
+    FILE* f = fopen("/proc/self/status", "r");
+    if (!f) return false;
+    char line[256];
+    bool traced = false;
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "TracerPid:", 10) == 0) {
+            int pid = atoi(line + 10);
+            if (pid != 0) traced = true;
+            break;
+        }
+    }
+    fclose(f);
+    return traced;
+}
+
+// 粗略检测 Frida：扫描自身内存映射里是否含 frida/gadget 字样
+bool fridaDetected() {
+    FILE* f = fopen("/proc/self/maps", "r");
+    if (!f) return false;
+    char line[512];
+    bool hit = false;
+    while (fgets(line, sizeof(line), f)) {
+        if (strstr(line, "frida") || strstr(line, "gadget") || strstr(line, "gum-js-loop")) {
+            hit = true;
+            break;
+        }
+    }
+    fclose(f);
+    return hit;
+}
+
+// 综合判定：是否处于被调试/被注入状态
+// 注意：不使用 ptrace(PTRACE_TRACEME) —— 它有"一次性"副作用，
+// 调用一次后进程自身即被标记为被追踪，后续再调用会一直失败，
+// 导致校验永久误判。这里只用无副作用的只读探测。
+bool tampered() {
+    if (tracerPidNonZero()) return true;
+    if (fridaDetected()) return true;
+    return false;
+}
+
+} // namespace
+
+// ======================= JNI 导出 =======================
+
+// 注意：因 CMake 开了 -fvisibility=hidden，JNI 入口必须显式导出，否则运行时找不到。
+extern "C" __attribute__((visibility("default"))) JNIEXPORT jboolean JNICALL
+Java_com_oopnv70_simpleapp_License_nativeVerify(JNIEnv* env, jclass /*clazz*/, jstring input) {
+    if (input == nullptr) return JNI_FALSE;
+
+    const char* raw = env->GetStringUTFChars(input, nullptr);
+    if (raw == nullptr) return JNI_FALSE;
+    std::string s(raw);
+    env->ReleaseStringUTFChars(input, raw);
+
+    if (s.empty()) return JNI_FALSE;
+
+    // 反调试哨兵：命中则强制失败（温和策略：只拒绝，不崩溃）
+    if (tampered()) {
+        LOGW("tampered/debug environment detected -> reject");
+        return JNI_FALSE;
+    }
+
+    // 派生盐 + 拼装明文
+    uint8_t salt[10];
+    deriveSalt(salt);
+    uint8_t key[22];
+    assembleKey(key);
+
+    // 双层校验：
+    //  A) 输入 == 明文卡密 的迭代摘要 必须等于 EXPECTED
+    //  B) 程序自身还原出的明文 的迭代摘要 也必须等于 EXPECTED（自校验）
+    //     —— 若有人篡改了 ENC/MASK/EXPECTED，这里会不一致，直接拒绝。
+    uint8_t selfHash[32];
+    {
+        uint8_t buf[10 + 22];
+        memcpy(buf, salt, 10);
+        memcpy(buf + 10, key, 22);
+        iterHash(buf, sizeof(buf), selfHash);
+    }
+    if (!equals32(selfHash, EXPECTED)) {
+        LOGW("self-check failed (constants tampered?) -> reject");
+        return JNI_FALSE;
+    }
+
+    // 校验用户输入
+    uint8_t inHash[32];
+    {
+        size_t n = s.size();
+        uint8_t* buf = (uint8_t*)malloc(10 + n);
+        if (!buf) return JNI_FALSE;
+        memcpy(buf, salt, 10);
+        memcpy(buf + 10, s.data(), n);
+        iterHash(buf, 10 + n, inHash);
+        free(buf);
+    }
+
+    // 清零敏感内存
+    memset(key, 0, sizeof(key));
+    memset(salt, 0, sizeof(salt));
+
+    return equals32(inHash, EXPECTED) ? JNI_TRUE : JNI_FALSE;
+}

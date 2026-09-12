@@ -33,6 +33,24 @@ jobs:
           echo "--- installed platforms ---"
           ls "$ANDROID_HOME/platforms"
 
+      - name: Install NDK & CMake (native build)
+        run: |
+          # 显式安装 NDK 与 CMake，避免依赖 runner 预装状态
+          sdkmanager --install "ndk;27.3.13750724" "cmake;3.22.1"
+          echo "--- ndk ---"
+          ls "$ANDROID_HOME/ndk" || true
+          echo "--- cmake ---"
+          ls "$ANDROID_HOME/cmake" || true
+
+      - name: Point Gradle to NDK
+        run: |
+          # 把 NDK 绝对路径写入 local.properties / 环境变量，避免 AGP 找不到
+          echo "ndk.dir=$ANDROID_HOME/ndk/27.3.13750724" >> local.properties
+          echo "sdk.dir=$ANDROID_HOME" >> local.properties
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.3.13750724" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.3.13750724" >> $GITHUB_ENV
+          cat local.properties
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
