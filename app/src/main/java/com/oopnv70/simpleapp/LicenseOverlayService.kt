@@ -110,7 +110,8 @@ class LicenseOverlayService : Service() {
         }
 
         val input = EditText(ctx).apply {
-            hint = "XXXX-XXXX-XXXX-XXXX"
+            // 注意：必须写 this.hint，否则会被解析到外层同名变量 hint（TextView）
+            this.hint = "XXXX-XXXX-XXXX-XXXX"
             setTextColor(Color.WHITE)
             setHintTextColor(0xFF6B747E.toInt())
             inputType = InputType.TYPE_CLASS_TEXT
