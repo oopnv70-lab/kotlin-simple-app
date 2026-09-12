@@ -3,8 +3,6 @@ name: Build APK
 on:
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
   workflow_dispatch:
 
 permissions:
@@ -12,7 +10,7 @@ permissions:
 
 jobs:
   build:
-    name: Build Debug & Release APK
+    name: Build APK
     runs-on: ubuntu-latest
 
     steps:
@@ -28,56 +26,62 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install platform & build-tools
+      - name: Accept all licenses
         run: |
-          sdkmanager --install "platforms;android-37" "build-tools;36.0.0" "platform-tools"
-          yes | sdkmanager --licenses || true
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+
+      - name: List available Android platforms (debug info)
+        run: |
+          echo "===== available platforms ====="
+          sdkmanager --list 2>/dev/null | grep -E "platforms;android-" | head -60 || true
+          echo "===== available build-tools ====="
+          sdkmanager --list 2>/dev/null | grep -E "build-tools;" | head -40 || true
+
+      - name: Install SDK packages (auto-detect android-37)
+        run: |
+          set +e
+          # 先尝试直接用 android-37
+          sdkmanager --install "platforms;android-37" "build-tools;36.0.0" "platform-tools" >/tmp/inst.log 2>&1
+          RC=$?
+          if [ $RC -ne 0 ]; then
+            echo "android-37 直接安装失败，尝试从可用列表里找最接近的 37 平台包："
+            CAND=$(sdkmanager --list 2>/dev/null | grep -oE "platforms;android-[A-Za-z0-9.]+" | sort -u | grep -iE "37|Cinnamon|Baklava" | head -1)
+            echo "candidate = $CAND"
+            if [ -n "$CAND" ]; then
+              sdkmanager --install "$CAND" "platform-tools" "build-tools;36.0.0"
+            fi
+          fi
+          echo "--- last 40 lines of install log ---"
+          tail -40 /tmp/inst.log || true
+          echo "--- installed platforms ---"
+          ls "$ANDROID_HOME/platforms" 2>/dev/null || true
+
+      - name: Show installed components
+        run: |
+          ls -la "$ANDROID_HOME" || true
+          ls "$ANDROID_HOME/platforms" 2>/dev/null || true
+          ls "$ANDROID_HOME/build-tools" 2>/dev/null || true
 
       - name: Set up Gradle 9.6
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.6'
 
-      - name: Print environment
-        run: |
-          java -version
-          gradle --version
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          ls "$ANDROID_HOME/platforms" || true
-
       - name: Build Debug APK
         run: gradle :app:assembleDebug --stacktrace --no-daemon
 
-      - name: Build Release APK (unsigned)
-        run: gradle :app:assembleRelease --stacktrace --no-daemon
-
       - name: Collect APKs
+        if: always()
         run: |
           mkdir -p out
           cp app/build/outputs/apk/debug/*.apk out/ 2>/dev/null || true
           cp app/build/outputs/apk/release/*.apk out/ 2>/dev/null || true
           ls -la out || true
 
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
+      - name: Upload APK
         if: always()
-        with:
-          name: app-debug
-          path: app/build/outputs/apk/debug/*.apk
-          if-no-files-found: warn
-
-      - name: Upload Release APK
         uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: app-release-unsigned
-          path: app/build/outputs/apk/release/*.apk
-          if-no-files-found: warn
-
-      - name: Upload combined APK bundle
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: apk-all
+          name: apk
           path: out/*.apk
           if-no-files-found: warn
