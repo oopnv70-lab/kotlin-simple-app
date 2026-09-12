@@ -11,6 +11,9 @@ android {
     compileSdk = 37
     compileSdkMinor = 0
 
+    // NDK 版本必须与 CI 中安装的版本一致（AGP 9.4 期望 28.2.13676358）
+    ndkVersion = "28.2.13676358"
+
     defaultConfig {
         applicationId = "com.oopnv70.simpleapp"
         minSdk = 26
