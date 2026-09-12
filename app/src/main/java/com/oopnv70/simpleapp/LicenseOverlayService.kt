@@ -112,14 +112,17 @@ class LicenseOverlayService : Service() {
 
         val ctx = this
         val density = resources.displayMetrics.density
+        val screenWidth = resources.displayMetrics.widthPixels
+        // 卡片宽度：屏幕宽度的 82%，限制在合理区间，避免太宽/太窄
+        val cardWidth = (screenWidth * 0.82f).toInt()
         fun dp(v: Int) = (v * density).toInt()
 
-        // 根容器（半透明遮罩）
+        // 根容器：透明、仅用于包裹卡片
+        // 注意：不要给它设半透明背景色，否则会铺满全屏形成"假遮罩"
         val root = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setBackgroundColor(0xCC000000.toInt())
-            setPadding(dp(24), dp(24), dp(24), dp(24))
+            setBackgroundColor(Color.TRANSPARENT)
         }
 
         // 卡片
@@ -207,7 +210,8 @@ class LicenseOverlayService : Service() {
         card.addView(btnRow)
 
         root.addView(card, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
+            // 卡片用固定合理宽度（屏幕 82%），既不撑满全屏也不至于太窄
+            cardWidth,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
 
@@ -219,8 +223,10 @@ class LicenseOverlayService : Service() {
         }
 
         val lp = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
+            // 关键：窗口自身按内容大小（WRAP_CONTENT），
+            // 不要用 MATCH_PARENT，否则悬浮窗会占满整屏、遮住整个界面。
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
             type,
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
