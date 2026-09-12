@@ -370,10 +370,11 @@ static jint nv(JNIEnv* env, jobject, jstring input) {
     return 1;
 }
 
-// 生成本机授权凭据（十六进制文本）。仅表示"本机曾完成一次合法校验"。
+// 生成本机授权凭据。返回【加密后字节】的十六进制文本（纯 ASCII，可安全存盘）。
 static jstring mk(JNIEnv* env, jobject) {
     uint8_t t[32];
     qq(t);
+    gc(t, 32);
 
     char out[65];
     for (int i = 0; i < 32; ++i) {
@@ -383,7 +384,6 @@ static jstring mk(JNIEnv* env, jobject) {
         out[i * 2 + 1] = (char)(lo < 10 ? ('0' + lo) : ('a' + (lo - 10)));
     }
     out[64] = 0;
-    gc((uint8_t*)out, 64);
 
     jstring r = env->NewStringUTF(out);
     for (unsigned i = 0; i < sizeof(out); ++i) out[i] = 0;
@@ -392,7 +392,7 @@ static jstring mk(JNIEnv* env, jobject) {
     return r;
 }
 
-// 校验外部保存的凭据：解开后与本机重算值比对，一致则视为有效。
+// 校验外部保存的凭据：先按十六进制还原字节，再解密，与本机重算值比对。
 static jint ck(JNIEnv* env, jobject, jstring input) {
     if (input == nullptr) return 0;
     const char* raw = env->GetStringUTFChars(input, nullptr);
@@ -402,25 +402,21 @@ static jint ck(JNIEnv* env, jobject, jstring input) {
     env->ReleaseStringUTFChars(input, raw);
     if (s.size() != 64) return 0;
 
-    char b[65];
-    for (int i = 0; i < 64; ++i) b[i] = s[i];
-    b[64] = 0;
-    gc((uint8_t*)b, 64);
-
     uint8_t got[32];
     for (int i = 0; i < 32; ++i) {
         int hi, lo;
-        char ch1 = b[i * 2];
-        char ch2 = b[i * 2 + 1];
-        if (ch1 >= '0' && ch1 <= '9') hi = ch1 - '0';
-        else if (ch1 >= 'a' && ch1 <= 'f') hi = ch1 - 'a' + 10;
-        else { for (unsigned k = 0; k < sizeof(b); ++k) b[k] = 0; return 0; }
-        if (ch2 >= '0' && ch2 <= '9') lo = ch2 - '0';
-        else if (ch2 >= 'a' && ch2 <= 'f') lo = ch2 - 'a' + 10;
-        else { for (unsigned k = 0; k < sizeof(b); ++k) b[k] = 0; return 0; }
+        char c1 = s[i * 2];
+        char c2 = s[i * 2 + 1];
+        if (c1 >= '0' && c1 <= '9') hi = c1 - '0';
+        else if (c1 >= 'a' && c1 <= 'f') hi = c1 - 'a' + 10;
+        else return 0;
+        if (c2 >= '0' && c2 <= '9') lo = c2 - '0';
+        else if (c2 >= 'a' && c2 <= 'f') lo = c2 - 'a' + 10;
+        else return 0;
         got[i] = (uint8_t)((hi << 4) | lo);
     }
-    for (unsigned k = 0; k < sizeof(b); ++k) b[k] = 0;
+
+    gc(got, 32);
 
     uint8_t exp[32];
     qq(exp);
