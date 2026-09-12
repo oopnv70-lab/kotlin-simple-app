@@ -4,6 +4,13 @@
     <!-- 系统悬浮窗权限：卡密弹窗以独立悬浮窗形式呈现，浮在应用自身 UI 之上 -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
+    <!-- Android 13(API 33)+ 前台服务必须能发通知，否则 startForeground 抛异常导致闪退 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- 前台服务声明 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"

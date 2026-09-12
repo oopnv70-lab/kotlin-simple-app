@@ -58,7 +58,14 @@ class LicenseOverlayService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIF_ID, buildNotification())
+        // 关键：startForeground 必须在 5 秒内调用，否则系统报 ANR/闪退。
+        // 同时用 try-catch 兜底：某些 ROM 通知被禁时 startForeground 会抛异常，
+        // 此时我们不应崩溃，而是降级继续显示悬浮窗。
+        try {
+            startForeground(NOTIF_ID, buildNotification())
+        } catch (t: Throwable) {
+            // 通知通道不可用时忽略，继续走悬浮窗逻辑
+        }
         if (verified) {
             stopSelf()
             return START_NOT_STICKY

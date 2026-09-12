@@ -1,13 +1,16 @@
 package com.oopnv70.simpleapp
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -25,7 +28,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -34,27 +36,46 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 
 /**
  * 主界面。
  *
  * 启动后：
  *  1. 检查悬浮窗权限（SYSTEM_ALERT_WINDOW）
- *  2. 未授权 -> 引导去设置页授权
+ *  2. 未授权 -> 引导去设置页授权（返回后自动重新检查）
  *  3. 已授权 -> 启动 LicenseOverlayService，弹出独立的卡密验证悬浮窗
  *  4. 验证通过后，主界面露出真正的"已解锁"内容
+ *
+ * 修复说明（针对闪退）：
+ *  - 通知权限（POST_NOTIFICATIONS）在 Android 13+ 动态申请，避免前台服务通知失败崩溃
+ *  - 所有服务启动/权限跳转均 try-catch，杜绝未捕获异常闪退
+ *  - 悬浮窗权限返回用 onResume 兜底检查，兼容国产 ROM 无回调的问题
  */
 class MainActivity : ComponentActivity() {
 
     private var unlockedState by mutableStateOf(false)
 
-    private val overlayPermissionLauncher =
+    /** 通知权限申请（Android 13+ 前台服务需要） */
+    private val notificationPermLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            // 无论用户是否允许，都继续尝试显示悬浮窗（服务内部已做降级）
+            if (!granted) {
+                toast("未授予通知权限，悬浮窗验证仍会尝试显示")
+            }
+            startOverlayServiceSafely()
+        }
+
+    /** 引导用户去系统设置授权悬浮窗（特殊权限，无 result 回调，用 onResume 兜底） */
+    private val overlayPermLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-            // 用户从设置页返回，重新检查
             if (canDrawOverlays()) {
-                startOverlayService()
+                startOverlayServiceSafely()
             }
         }
+
+    /** 标记：用户因悬浮窗权限跳转过设置页，用于 onResume 回来时自动继续 */
+    private var waitingOverlayPermission = false
 
     /** 接收悬浮窗验证结果 */
     private val resultReceiver = object : BroadcastReceiver() {
@@ -68,13 +89,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 注册验证结果广播
-        val filter = IntentFilter(LicenseOverlayService.EXTRA_RESULT)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(resultReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(resultReceiver, filter)
+        // 注册验证结果广播（Android 13+ 必须显式指定 RECEIVER_NOT_EXPORTED）
+        runCatching {
+            val filter = IntentFilter(LicenseOverlayService.EXTRA_RESULT)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(resultReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("UnspecifiedRegisterReceiverFlag")
+                registerReceiver(resultReceiver, filter)
+            }
         }
 
         setContent {
@@ -85,7 +108,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     AppScreen(
                         unlocked = unlockedState,
-                        onRequestLicense = { ensurePermissionAndShow() }
+                        onRequestLicense = { ensurePermissionsAndShow() }
                     )
                 }
             }
@@ -100,6 +123,11 @@ class MainActivity : ComponentActivity() {
         if (LicenseOverlayService.unlocked) {
             unlockedState = true
         }
+        // 从"悬浮窗权限设置页"返回时的兜底：只要有权限就继续启动服务
+        if (waitingOverlayPermission && canDrawOverlays()) {
+            waitingOverlayPermission = false
+            startOverlayServiceSafely()
+        }
     }
 
     override fun onDestroy() {
@@ -111,32 +139,68 @@ class MainActivity : ComponentActivity() {
 
     private fun canDrawOverlays(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Settings.canDrawOverlays(this)
+            runCatching { Settings.canDrawOverlays(this) }.getOrDefault(false)
         } else {
             true
         }
     }
 
-    private fun ensurePermissionAndShow() {
-        if (canDrawOverlays()) {
-            startOverlayService()
-        } else {
-            // 跳转系统设置申请悬浮窗权限
-            val intent = Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:$packageName")
-            )
-            overlayPermissionLauncher.launch(intent)
+    /** 统一的权限检查 + 弹窗流程 */
+    private fun ensurePermissionsAndShow() {
+        // 1) 悬浮窗权限（必须）
+        if (!canDrawOverlays()) {
+            requestOverlayPermission()
+            return
+        }
+        // 2) 通知权限（Android 13+，前台服务需要，建议但非必须）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            // 先申请通知权限，回调里继续启动服务
+            runCatching {
+                notificationPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }.onFailure {
+                // 申请失败也直接启动，服务端已做降级
+                startOverlayServiceSafely()
+            }
+            return
+        }
+        // 3) 权限齐了，启动悬浮窗服务
+        startOverlayServiceSafely()
+    }
+
+    private fun requestOverlayPermission() {
+        waitingOverlayPermission = true
+        val intent = Intent(
+            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:$packageName")
+        )
+        runCatching { overlayPermLauncher.launch(intent) }
+            .onFailure {
+                waitingOverlayPermission = false
+                toast("无法打开悬浮窗权限设置页")
+            }
+    }
+
+    /** 启动悬浮窗服务，全程容错，绝不闪退 */
+    private fun startOverlayServiceSafely() {
+        runCatching {
+            val intent = Intent(this, LicenseOverlayService::class.java)
+                .setAction(LicenseOverlayService.ACTION_SHOW)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        }.onFailure { e ->
+            toast("启动悬浮窗服务失败: ${e.message}")
         }
     }
 
-    private fun startOverlayService() {
-        val intent = Intent(this, LicenseOverlayService::class.java)
-            .setAction(LicenseOverlayService.ACTION_SHOW)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
+    private fun toast(msg: String) {
+        runCatching {
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
         }
     }
 }
@@ -146,8 +210,6 @@ private fun AppScreen(
     unlocked: Boolean,
     onRequestLicense: () -> Unit
 ) {
-    var showLicense by remember { mutableStateOf(false) }
-
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -158,10 +220,7 @@ private fun AppScreen(
         if (unlocked) {
             UnlockedContent()
         } else {
-            LockedContent(onClick = {
-                showLicense = true
-                onRequestLicense()
-            })
+            LockedContent(onClick = onRequestLicense)
         }
     }
 }
@@ -172,10 +231,7 @@ private fun LockedContent(onClick: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text(
-            text = "🔒",
-            fontSize = 48.sp
-        )
+        Text(text = "\uD83D\uDD12", fontSize = 48.sp)
         Text(
             text = "应用未激活",
             color = Color.White,
@@ -202,10 +258,7 @@ private fun UnlockedContent() {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text(
-            text = "✅",
-            fontSize = 48.sp
-        )
+        Text(text = "\u2705", fontSize = 48.sp)
         Text(
             text = "验证通过",
             color = Color(0xFF6EE7A8),
