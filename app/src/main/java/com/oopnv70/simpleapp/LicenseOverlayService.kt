@@ -35,6 +35,12 @@ class LicenseOverlayService : Service() {
 
     companion object {
         const val ACTION_SHOW = "com.oopnv70.simpleapp.action.SHOW"
+        /** App 进入前台：允许（重新）显示悬浮窗 */
+        const val ACTION_VISIBLE = "com.oopnv70.simpleapp.action.VISIBLE"
+        /** App 退到后台/切换别的应用：自毁悬浮窗（仅隐藏，服务保留以便快速重现） */
+        const val ACTION_INVISIBLE = "com.oopnv70.simpleapp.action.INVISIBLE"
+        /** App 彻底退出：销毁服务（自毁） */
+        const val ACTION_DESTROY = "com.oopnv70.simpleapp.action.DESTROY"
         const val EXTRA_RESULT = "result"
         private const val CHANNEL_ID = "license_overlay_channel"
         private const val NOTIF_ID = 1001
@@ -66,12 +72,38 @@ class LicenseOverlayService : Service() {
         } catch (t: Throwable) {
             // 通知通道不可用时忽略，继续走悬浮窗逻辑
         }
-        if (verified) {
-            stopSelf()
-            return START_NOT_STICKY
+
+        when (intent?.action) {
+            // App 切到后台/别的应用 -> 拆掉悬浮窗（"自毁"）
+            ACTION_INVISIBLE -> {
+                hideOverlay()
+                return START_STICKY
+            }
+            // App 彻底退出 -> 整体自毁
+            ACTION_DESTROY -> {
+                hideOverlay()
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            // App 回到前台 -> 若未验证则重新弹出
+            ACTION_VISIBLE -> {
+                if (verified) {
+                    stopSelf()
+                } else {
+                    showOverlay()
+                }
+                return START_STICKY
+            }
+            else -> {
+                // 首次启动 / ACTION_SHOW
+                if (verified) {
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+                showOverlay()
+                return START_STICKY
+            }
         }
-        showOverlay()
-        return START_NOT_STICKY
     }
 
     /** 构建并显示悬浮窗 */
@@ -200,8 +232,14 @@ class LicenseOverlayService : Service() {
         overlayView = root
         runCatching { windowManager.addView(root, lp) }
             .onFailure { e ->
-                Toast.makeText(ctx, "悬浮窗添加失败: ${e.message}", Toast.LENGTH_LONG).show()
-                stopSelf()
+                // 添加失败（通常是权限未真正授予）——不要销毁服务，
+                // 等用户授权后切回前台仍可重试。失败时清掉引用，允许下次重试。
+                overlayView = null
+                Toast.makeText(
+                    ctx,
+                    "悬浮窗显示失败，请确认已授予「显示在其他应用上层」权限",
+                    Toast.LENGTH_LONG
+                ).show()
             }
     }
 

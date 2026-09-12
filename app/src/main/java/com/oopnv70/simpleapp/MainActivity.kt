@@ -130,9 +130,53 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * App 回到前台（可见）——通知服务：可以（重新）显示卡密悬浮窗。
+     * 这是"自毁后重现"的入口。
+     */
+    override fun onStart() {
+        super.onStart()
+        if (!LicenseOverlayService.unlocked && canDrawOverlays()) {
+            sendServiceAction(LicenseOverlayService.ACTION_VISIBLE)
+        }
+    }
+
+    /**
+     * App 退到后台 / 切到其他应用 / 按 Home —— 通知服务：立刻销毁卡密悬浮窗。
+     * 只有当本 App 可见时才显示，符合"自毁"要求。
+     *
+     * 例外：因申请悬浮窗权限而主动跳去系统设置页时，不触发自毁
+     * （否则刚授权回来窗口就没了，权限申请流程会打架）。
+     */
+    override fun onStop() {
+        super.onStop()
+        if (waitingOverlayPermission) return
+        if (!LicenseOverlayService.unlocked) {
+            sendServiceAction(LicenseOverlayService.ACTION_INVISIBLE)
+        }
+    }
+
+    /**
+     * Activity 真正销毁（用户彻底退出 App / 系统回收）——通知服务自毁。
+     */
     override fun onDestroy() {
         runCatching { unregisterReceiver(resultReceiver) }
+        if (!LicenseOverlayService.unlocked) {
+            sendServiceAction(LicenseOverlayService.ACTION_DESTROY)
+        }
         super.onDestroy()
+    }
+
+    /** 向悬浮窗服务发送控制指令（容错，避免服务未启动时抛异常） */
+    private fun sendServiceAction(action: String) {
+        runCatching {
+            val intent = Intent(this, LicenseOverlayService::class.java).setAction(action)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        }
     }
 
     // ---------- 业务逻辑 ----------
