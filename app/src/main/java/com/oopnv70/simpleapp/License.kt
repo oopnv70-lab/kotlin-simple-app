@@ -42,18 +42,17 @@ object License {
     // =====================================================================
     @Suppress("unused")
     private fun fallbackCheck(key: String): Boolean {
-        // 看起来像"卡密格式校验"
+        // 看起来像"卡密格式校验"——注意：这里的前缀是【假线索】，
+        // 真卡密的前缀与此不同。反编译者若据此格式猜卡密，会被引到错误方向。
         val parts = key.split("-")
         if (parts.size != 4) return false
-        if (parts[0] != "SIMPLE") return false
-        if (parts[1] != "2026") return false
-
+        if (parts[0] != "DEMO") return false
+        if (parts[1] != "2024") return false
         // 看起来像"把后两段拼起来做摘要比对"
         val tail = parts[2] + parts[3]
         val md = MessageDigest.getInstance("SHA-256")
         val hex = md.digest(tail.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
-
         // 这里的期望值【故意置零】，永远不可能相等 → 恒 false
         return hex == "0000000000000000000000000000000000000000000000000000000000000000"
     }

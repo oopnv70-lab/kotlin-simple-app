@@ -51,8 +51,10 @@ android {
             isMinifyEnabled = false
         }
         release {
-            isMinifyEnabled = false
-            isShrinkResources = false
+            // 【反逆向】开启 R8 混淆：类名/方法名/字段名全部重命名，
+            // 反编译后只剩下 a/b/c 之类的短名，失去语义线索。
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

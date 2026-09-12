@@ -232,8 +232,12 @@ bool baitsTriggered(JNIEnv* env) {
 //   1 = 验证通过
 //   2 = 检测到篡改（蜜罐命中）—— dex 层据此弹出"你被骗了"
 // 注意：因 CMake 开了 -fvisibility=hidden，JNI 入口必须显式导出，否则运行时找不到。
-extern "C" __attribute__((visibility("default"))) JNIEXPORT jint JNICALL
-Java_com_oopnv70_simpleapp_License_nativeVerify(JNIEnv* env, jclass /*clazz*/, jstring input) {
+//
+// 【反逆向】不再使用 Java_com_xxx_nativeVerify 这种"可读符号"，改走 RegisterNatives：
+//   - 导出符号表中只剩下 JNI_OnLoad 一项（Android 加载器硬性要求）
+//   - 真实校验函数改成内部静态名（甚至无语义名），不进入 .dynsym
+//   - 反编译者 nm/readelf 看不到任何有意义的函数名
+static jint nv_impl(JNIEnv* env, jobject /*thiz*/, jstring input) {
     if (input == nullptr) return 0;
 
     // ===== 优先探测：诱饵陷阱（dex 是否被改） =====
@@ -294,4 +298,42 @@ Java_com_oopnv70_simpleapp_License_nativeVerify(JNIEnv* env, jclass /*clazz*/, j
     memset(salt, 0, sizeof(salt));
 
     return equals32(inHash, EXPECTED) ? 1 : 0;
+}
+
+// ======================= 动态注册（隐藏符号） =======================
+// 【反逆向核心】用 RegisterNatives 注册，JNI 真实函数名不出现在符号表。
+//
+// 注意：类名/方法名是以字符串形式出现的（不是符号），strip 不会删字符串；
+// 因此这里的字符串仍然有价值 —— 但它不是"符号表"，只是普通 .rodata 字符串。
+// 若需要进一步弱化，可在构建期对这些字符串做异或编码（后续步骤）。
+//
+// 注册目标类：com/oopnv70/simpleapp/License
+// 注册方法：nativeVerify(String) -> Int
+//
+// 若类被构建期重命名，这里需要同步；因此反逆向增强脚本会替换本字符串。
+extern "C" __attribute__((visibility("default"))) JNIEXPORT jint JNICALL
+JNI_OnLoad(JavaVM* vm, void* /*reserved*/) {
+    JNIEnv* env = nullptr;
+    if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        return JNI_ERR;
+    }
+
+    // ---- 动态注册：nativeVerify ----
+    jclass cls = env->FindClass("com/oopnv70/simpleapp/License");
+    if (cls == nullptr) {
+        env->ExceptionClear();
+        return JNI_VERSION_1_6;  // 找不到类也不崩，交给后续调用报错
+    }
+
+    static const JNINativeMethod methods[] = {
+        // 方法名、签名、函数指针
+        { const_cast<char*>("nativeVerify"),
+          const_cast<char*>("(Ljava/lang/String;)I"),
+          reinterpret_cast<void*>(nv_impl) },
+    };
+    if (env->RegisterNatives(cls, methods, sizeof(methods) / sizeof(methods[0])) != JNI_OK) {
+        env->ExceptionClear();
+    }
+    env->DeleteLocalRef(cls);
+    return JNI_VERSION_1_6;
 }
