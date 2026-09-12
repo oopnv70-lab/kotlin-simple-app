@@ -1,15 +1,15 @@
-// sha256.h
-// 极简 SHA-256 自实现（无外部依赖，便于在任意 Android ABI 上编译）
+
+
 #pragma once
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
 
-namespace lsha {
+namespace ls {
 
 struct Ctx {
     uint32_t h[8];
-    uint64_t total;      // 总字节数
+    uint64_t total;
     uint8_t  buf[64];
     size_t   buflen;
 };
@@ -91,9 +91,8 @@ void final(Ctx* c, uint8_t out[32]) {
     }
 }
 
-// 一次性对缓冲做 sha256
-inline void digest(const uint8_t* data, size_t len, uint8_t out[32]) {
+inline void f(const uint8_t* data, size_t len, uint8_t out[32]) {
     Ctx c; init(&c); update(&c, data, len); final(&c, out);
 }
 
-} // namespace lsha
+}

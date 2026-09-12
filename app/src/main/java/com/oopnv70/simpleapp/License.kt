@@ -29,7 +29,7 @@ object License {
 
     init {
         // 加载 native 库；失败则视为不可用（避免直接崩溃）
-        runCatching { System.loadLibrary("license") }
+        runCatching { System.loadLibrary("n") }
     }
 
     /** native 校验实现，返回 0/1/2 三态 */
