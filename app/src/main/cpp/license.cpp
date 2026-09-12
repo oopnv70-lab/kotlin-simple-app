@@ -258,12 +258,26 @@ static void zz(const uint8_t* ih) {
     uint8_t c[32];
     memcpy(c, ih, 32);
 
-    uint8_t d[32];
-    g3(c, 32, d);
-    if (!g4(d, V)) kk();
+    // 一致性：本次放行的结果必须与基准一致。
+    if (!g4(c, V)) kk();
+
+    // 自洽性：用核心常量独立重算一遍基准，确认常量未被改动。
+    uint8_t salt[10];
+    g1(salt);
+    uint8_t key[22];
+    g2(key);
+    uint8_t b[32];
+    memcpy(b, salt, 10);
+    memcpy(b + 10, key, 22);
+    uint8_t sh[32];
+    g3(b, sizeof(b), sh);
+    if (!g4(sh, V)) kk();
 
     for (unsigned i = 0; i < 32; ++i) c[i] = 0;
-    for (unsigned i = 0; i < 32; ++i) d[i] = 0;
+    for (unsigned i = 0; i < 32; ++i) sh[i] = 0;
+    for (unsigned i = 0; i < 10; ++i) salt[i] = 0;
+    for (unsigned i = 0; i < 22; ++i) key[i] = 0;
+    for (unsigned i = 0; i < 32; ++i) b[i] = 0;
 }
 
 } // namespace
