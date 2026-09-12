@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SimpleApp</string>
+
+    <!-- 卡密弹窗文案 -->
+    <string name="license_title">卡密验证</string>
+    <string name="license_hint">请输入卡密</string>
+    <string name="license_confirm">验证</string>
+    <string name="license_cancel">取消</string>
+    <string name="license_ok">验证通过</string>
+    <string name="license_fail">卡密错误</string>
+
+    <!-- 悬浮窗权限引导 -->
+    <string name="overlay_need_permission">需要悬浮窗权限才能显示验证弹窗</string>
+    <string name="overlay_grant">去授权</string>
+</resources>
