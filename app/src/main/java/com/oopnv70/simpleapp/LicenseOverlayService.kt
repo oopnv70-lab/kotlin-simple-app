@@ -180,17 +180,25 @@ class LicenseOverlayService : Service() {
             text = getString(R.string.license_confirm)
             setOnClickListener {
                 val value = input.text?.toString().orEmpty()
-                if (License.verify(value)) {
-                    verified = true
-                    markUnlocked()
-                    Toast.makeText(ctx, getString(R.string.license_ok), Toast.LENGTH_SHORT).show()
-                    hideOverlay()
-                    // 通知 Activity 刷新
-                    sendBroadcast(Intent(EXTRA_RESULT).setPackage(packageName))
-                    stopSelf()
-                } else {
-                    Toast.makeText(ctx, getString(R.string.license_fail), Toast.LENGTH_SHORT).show()
-                    input.setText("")
+                when (License.verifyCode(value)) {
+                    License.R_OK -> {
+                        // 验证通过
+                        verified = true
+                        markUnlocked()
+                        Toast.makeText(ctx, getString(R.string.license_ok), Toast.LENGTH_SHORT).show()
+                        hideOverlay()
+                        // 通知 Activity 刷新
+                        sendBroadcast(Intent(EXTRA_RESULT).setPackage(packageName))
+                        stopSelf()
+                    }
+                    License.R_TAMPERED -> {
+                        // 蜜罐命中：检测到 dex 被篡改
+                        showBustedDialog(ctx)
+                    }
+                    else -> {
+                        Toast.makeText(ctx, getString(R.string.license_fail), Toast.LENGTH_SHORT).show()
+                        input.setText("")
+                    }
                 }
             }
         }
@@ -253,6 +261,87 @@ class LicenseOverlayService : Service() {
         overlayView?.let {
             runCatching { windowManager.removeView(it) }
             overlayView = null
+        }
+    }
+
+    /**
+     * 蜜罐命中：把悬浮窗内容替换为"你被骗了"的嘲讽画面。
+     * 直接复用已有悬浮窗，不新建窗口，避免依赖额外权限/闪烁。
+     */
+    private fun showBustedDialog(ctx: Context) {
+        runCatching {
+            val density = resources.displayMetrics.density
+            fun dp(v: Int) = (v * density).toInt()
+
+            val root = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setBackgroundColor(Color.TRANSPARENT)
+            }
+
+            val card = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(dp(24), dp(28), dp(24), dp(24))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(20).toFloat()
+                    setColor(0xFF2A1416.toInt())
+                    setStroke(dp(1), 0xFF7A2A2E.toInt())
+                }
+            }
+
+            val emoji = TextView(ctx).apply {
+                text = "\uD83D\uDE02"   // 😂
+                textSize = 44f
+                gravity = Gravity.CENTER
+            }
+            val t1 = TextView(ctx).apply {
+                text = "你被骗了"
+                setTextColor(0xFFFF6B6B.toInt())
+                textSize = 22f
+                gravity = Gravity.CENTER
+                setPadding(0, dp(8), 0, dp(6))
+            }
+            val t2 = TextView(ctx).apply {
+                text = "这份 APK 的 dex 已被修改，触发了完整性陷阱。\n真正的校验在 native 层，改 Java 代码没有用哦。"
+                setTextColor(0xFFC7A9AB.toInt())
+                textSize = 13f
+                gravity = Gravity.CENTER
+                setPadding(0, 0, 0, dp(16))
+            }
+            val ok = Button(ctx).apply {
+                text = "我认输"
+                setOnClickListener {
+                    hideOverlay()
+                    stopSelf()
+                }
+            }
+
+            card.addView(emoji)
+            card.addView(t1)
+            card.addView(t2)
+            card.addView(ok)
+            root.addView(card)
+
+            val lp = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                else
+                    WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT
+            ).apply { gravity = Gravity.CENTER }
+
+            // 移除旧的验证窗，换上嘲讽窗
+            hideOverlay()
+            overlayView = root
+            windowManager.addView(root, lp)
+        }.onFailure { e ->
+            Toast.makeText(ctx, "你被骗了 😂", Toast.LENGTH_LONG).show()
+            stopSelf()
         }
     }
 

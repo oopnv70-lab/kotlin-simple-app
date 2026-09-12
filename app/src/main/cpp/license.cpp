@@ -143,26 +143,116 @@ bool tampered() {
     return false;
 }
 
+// ======================= 诱饵（陷阱）探测 =======================
+//
+// 原理：
+//   dex 里放置若干"假校验"函数，正常情况下【永远返回 false】。
+//   本函数通过 JNI 反向调它们，看返回值：
+//     - 返回 false → 正常（没人动过）
+//     - 返回 true  → 说明攻击者把这些"永远不可能通过"的函数改成了恒 true
+//                    → 判定为被篡改（蜜罐命中）
+//
+// 该方案优点：不依赖签名 / 文件哈希 / 内存扫描，纯逻辑自证，零误报。
+
+// 探测单个诱饵方法：返回 true 表示"命中陷阱"
+// 兼容两种编译形态：
+//   - Kotlin object 的普通方法 → 实例方法（配合 INSTANCE 实例调用）
+//   - 静态方法（若加过 @JvmStatic）→ 静态方法
+bool probeBait(JNIEnv* env, jclass cls, jobject inst, const char* name) {
+    const char* sig = "(Ljava/lang/String;)Z";
+
+    jstring probe = env->NewStringUTF("PROBE-PROBE-PROBE-PROBE");
+    if (probe == nullptr) {
+        env->ExceptionClear();
+        return false;
+    }
+
+    // 形态 1：实例方法
+    jmethodID mid = env->GetMethodID(cls, name, sig);
+    if (mid != nullptr) {
+        jboolean r = env->CallBooleanMethod(inst, mid, probe);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            return true; // 调用异常 → 视为被篡改
+        }
+        return r == JNI_TRUE; // 竟然返回 true = 被改过
+    }
+    env->ExceptionClear();
+
+    // 形态 2：静态方法
+    jmethodID smid = env->GetStaticMethodID(cls, name, sig);
+    if (smid != nullptr) {
+        jboolean r = env->CallStaticBooleanMethod(cls, smid, probe);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            return true;
+        }
+        return r == JNI_TRUE;
+    }
+    env->ExceptionClear();
+
+    // 两种形态都找不到 → 方法被删除/改名，视为被篡改
+    return true;
+}
+
+// 综合探测所有诱饵
+bool baitsTriggered(JNIEnv* env) {
+    jclass cls = env->FindClass("com/oopnv70/simpleapp/License");
+    if (cls == nullptr) {
+        env->ExceptionClear();
+        return true; // 类都没了，肯定被改过
+    }
+    // 取单例实例：License.INSTANCE
+    jfieldID instField = env->GetStaticFieldID(cls, "INSTANCE",
+                                               "Lcom/oopnv70/simpleapp/License;");
+    if (instField == nullptr) {
+        env->ExceptionClear();
+        return true; // 单例结构被破坏 → 视为被篡改
+    }
+    jobject inst = env->GetStaticObjectField(cls, instField);
+    if (inst == nullptr) {
+        env->ExceptionClear();
+        return true;
+    }
+
+    const char* names[] = {"fallbackCheck", "legacyCheck"};
+    bool hit = false;
+    for (const char* n : names) {
+        if (probeBait(env, cls, inst, n)) { hit = true; break; }
+    }
+    return hit;
+}
+
 } // namespace
 
 // ======================= JNI 导出 =======================
 
+// 返回码约定（jint）：
+//   0 = 验证失败
+//   1 = 验证通过
+//   2 = 检测到篡改（蜜罐命中）—— dex 层据此弹出"你被骗了"
 // 注意：因 CMake 开了 -fvisibility=hidden，JNI 入口必须显式导出，否则运行时找不到。
-extern "C" __attribute__((visibility("default"))) JNIEXPORT jboolean JNICALL
+extern "C" __attribute__((visibility("default"))) JNIEXPORT jint JNICALL
 Java_com_oopnv70_simpleapp_License_nativeVerify(JNIEnv* env, jclass /*clazz*/, jstring input) {
-    if (input == nullptr) return JNI_FALSE;
+    if (input == nullptr) return 0;
+
+    // ===== 优先探测：诱饵陷阱（dex 是否被改） =====
+    if (baitsTriggered(env)) {
+        LOGW("bait triggered: dex tampered -> TAMPERED");
+        return 2;
+    }
 
     const char* raw = env->GetStringUTFChars(input, nullptr);
-    if (raw == nullptr) return JNI_FALSE;
+    if (raw == nullptr) return 0;
     std::string s(raw);
     env->ReleaseStringUTFChars(input, raw);
 
-    if (s.empty()) return JNI_FALSE;
+    if (s.empty()) return 0;
 
-    // 反调试哨兵：命中则强制失败（温和策略：只拒绝，不崩溃）
+    // 反调试哨兵：命中则视为篡改
     if (tampered()) {
-        LOGW("tampered/debug environment detected -> reject");
-        return JNI_FALSE;
+        LOGW("tampered/debug environment detected -> TAMPERED");
+        return 2;
     }
 
     // 派生盐 + 拼装明文
@@ -183,8 +273,8 @@ Java_com_oopnv70_simpleapp_License_nativeVerify(JNIEnv* env, jclass /*clazz*/, j
         iterHash(buf, sizeof(buf), selfHash);
     }
     if (!equals32(selfHash, EXPECTED)) {
-        LOGW("self-check failed (constants tampered?) -> reject");
-        return JNI_FALSE;
+        LOGW("self-check failed (constants tampered?) -> TAMPERED");
+        return 2;
     }
 
     // 校验用户输入
@@ -192,7 +282,7 @@ Java_com_oopnv70_simpleapp_License_nativeVerify(JNIEnv* env, jclass /*clazz*/, j
     {
         size_t n = s.size();
         uint8_t* buf = (uint8_t*)malloc(10 + n);
-        if (!buf) return JNI_FALSE;
+        if (!buf) return 0;
         memcpy(buf, salt, 10);
         memcpy(buf + 10, s.data(), n);
         iterHash(buf, 10 + n, inHash);
@@ -203,5 +293,5 @@ Java_com_oopnv70_simpleapp_License_nativeVerify(JNIEnv* env, jclass /*clazz*/, j
     memset(key, 0, sizeof(key));
     memset(salt, 0, sizeof(salt));
 
-    return equals32(inHash, EXPECTED) ? JNI_TRUE : JNI_FALSE;
+    return equals32(inHash, EXPECTED) ? 1 : 0;
 }
