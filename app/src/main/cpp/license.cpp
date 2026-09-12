@@ -192,6 +192,8 @@ bool h3() {
 }
 
 // ---------- 探测 ----------
+// 语义：仅当"确实执行了探测方法、且它返回 true"时，才算命中篡改。
+// 任何"取不到类/方法/实例"的情况一律视为环境问题，不判定篡改，避免误杀正常设备。
 bool k1(JNIEnv* e, jclass c, jobject o, const std::string& nm) {
     std::string sg = dstr(S_FBSIG);
     std::string pv = dstr(S_PROBE);
@@ -200,21 +202,16 @@ bool k1(JNIEnv* e, jclass c, jobject o, const std::string& nm) {
     if (js == nullptr) { e->ExceptionClear(); return false; }
 
     jmethodID id = e->GetMethodID(c, nm.c_str(), sg.c_str());
-    if (id != nullptr) {
-        jboolean r = e->CallBooleanMethod(o, id, js);
-        if (e->ExceptionCheck()) { e->ExceptionClear(); return true; }
-        return r == JNI_TRUE;
+    if (id == nullptr) {
+        e->ExceptionClear();
+        e->DeleteLocalRef(js);
+        return false;
     }
-    e->ExceptionClear();
 
-    jmethodID si = e->GetStaticMethodID(c, nm.c_str(), sg.c_str());
-    if (si != nullptr) {
-        jboolean r = e->CallStaticBooleanMethod(c, si, js);
-        if (e->ExceptionCheck()) { e->ExceptionClear(); return true; }
-        return r == JNI_TRUE;
-    }
-    e->ExceptionClear();
-    return true;
+    jboolean r = e->CallBooleanMethod(o, id, js);
+    e->DeleteLocalRef(js);
+    if (e->ExceptionCheck()) { e->ExceptionClear(); return false; }
+    return r == JNI_TRUE;
 }
 
 bool k2(JNIEnv* e) {
@@ -223,19 +220,23 @@ bool k2(JNIEnv* e) {
     std::string fs = dstr(S_INSTSIG);
 
     jclass c = e->FindClass(cn.c_str());
-    if (c == nullptr) { e->ExceptionClear(); return true; }
+    if (c == nullptr) { e->ExceptionClear(); return false; }
 
     jfieldID fi = e->GetStaticFieldID(c, fn.c_str(), fs.c_str());
-    if (fi == nullptr) { e->ExceptionClear(); return true; }
+    if (fi == nullptr) { e->ExceptionClear(); e->DeleteLocalRef(c); return false; }
 
     jobject ins = e->GetStaticObjectField(c, fi);
-    if (ins == nullptr) { e->ExceptionClear(); return true; }
+    if (ins == nullptr) { e->ExceptionClear(); e->DeleteLocalRef(c); return false; }
 
     std::string n1 = dstr(S_FB);
     std::string n2 = dstr(S_LG);
-    if (k1(e, c, ins, n1)) return true;
-    if (k1(e, c, ins, n2)) return true;
-    return false;
+    bool hit = false;
+    if (k1(e, c, ins, n1)) hit = true;
+    if (!hit && k1(e, c, ins, n2)) hit = true;
+
+    e->DeleteLocalRef(ins);
+    e->DeleteLocalRef(c);
+    return hit;
 }
 
 // ---------- 静默终止 ----------
@@ -248,20 +249,18 @@ static void kk() {
 }
 
 // ---------- 放行前的最终复检 ----------
-// 只有当主流程判定"通过"时才走到这里：再独立核对一遍环境与调用方状态。
-// 任意一项不符 → 静默终止进程，绝不返回。
+// 只有当主流程判定"通过"时才走到这里。
+// 复检只做【纯计算、结果确定】的核对：把"通过值"再算一遍并比对，
+// 用来确认结果没有被中途掉包。绝不在此做环境/反射等易受运行环境影响的判断，
+// 以免正常设备被误判。任一项不符 → 静默终止进程，绝不返回。
 __attribute__((noinline))
-static void zz(JNIEnv* e, const uint8_t* ih) {
+static void zz(const uint8_t* ih) {
     uint8_t c[32];
     memcpy(c, ih, 32);
-
-    if (h3()) kk();
 
     uint8_t d[32];
     g3(c, 32, d);
     if (!g4(d, V)) kk();
-
-    if (k2(e)) kk();
 
     for (unsigned i = 0; i < 32; ++i) c[i] = 0;
     for (unsigned i = 0; i < 32; ++i) d[i] = 0;
@@ -313,7 +312,7 @@ static jint nv(JNIEnv* env, jobject, jstring input) {
 
     if (!g4(ih, V)) return 0;
 
-    zz(env, ih);
+    zz(ih);
     return 1;
 }
 
