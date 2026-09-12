@@ -81,6 +81,15 @@ static const SB S_GADGET = {S_GADGET_d, 6};
 static const uint32_t S_GUM_d[] = {0x1663cc2au,0x2e163b38u,0x0008e888u};
 static const SB S_GUM = {S_GUM_d, 11};
 
+static const uint32_t S_MK_d[] = {0x0000a2aeu,0x00000000u,0x00000000u,0x00000000u,0x00000000u,0x00000000u,0x00000000u,0x00000000u};
+static const SB S_MK = {S_MK_d, 2};
+static const uint32_t S_MKSIG_d[] = {0x7837e7d1u,0x88e38de9u,0xabd759abu,0xf354d699u,0xfdd08c3cu,0x00000000u,0x00000000u,0x00000000u};
+static const SB S_MKSIG = {S_MKSIG_d, 20};
+static const uint32_t S_CK_d[] = {0x0000a2a0u,0x00000000u,0x00000000u,0x00000000u,0x00000000u,0x00000000u,0x00000000u,0x00000000u};
+static const SB S_CK = {S_CK_d, 2};
+static const uint32_t S_CKSIG_d[] = {0xc38f3bbfu,0x01d1cb5eu,0x8780a368u,0x3ad29469u,0x471284d5u,0x000000c5u,0x00000000u,0x00000000u};
+static const SB S_CKSIG = {S_CKSIG_d, 21};
+
 // ---------- 素材 ----------
 static const uint32_t P[5] = { 0x5A49D3u, 0x2D37A1u, 0x9C11F0u, 0x40B75Eu, 0x1E93C2u };
 
@@ -280,6 +289,37 @@ static void zz(const uint8_t* ih) {
     for (unsigned i = 0; i < 32; ++i) b[i] = 0;
 }
 
+// ---------- 本地状态编解码 ----------
+// 以 g1 派生出的密钥流对字节做可逆变换；加密与解密是同一运算。
+void gc(uint8_t* p, size_t n) {
+    uint8_t ks[10];
+    g1(ks);
+    for (size_t i = 0; i < n; ++i) {
+        uint8_t k = (uint8_t)(ks[i % 10] ^ (uint8_t)((i * 131u + 7u) & 0xFFu));
+        p[i] = (uint8_t)(p[i] ^ k);
+    }
+    for (unsigned i = 0; i < sizeof(ks); ++i) ks[i] = 0;
+}
+
+// ---------- 本机授权凭据 ----------
+// 凭据 = H(盐 || 密钥)，其中盐/密钥由本机常量派生。
+// 它不含卡密原文，也不依赖卡密，仅表示"本机曾完成过一次合法校验"。
+// 外部只能看到一段加密后的字节，改动它无法通过此处的重算比对。
+__attribute__((noinline))
+static void qq(uint8_t* out32) {
+    uint8_t salt[10];
+    g1(salt);
+    uint8_t key[22];
+    g2(key);
+    uint8_t b[32];
+    memcpy(b, salt, 10);
+    memcpy(b + 10, key, 22);
+    g3(b, sizeof(b), out32);
+    for (unsigned i = 0; i < sizeof(salt); ++i) salt[i] = 0;
+    for (unsigned i = 0; i < sizeof(key); ++i) key[i] = 0;
+    for (unsigned i = 0; i < sizeof(b); ++i) b[i] = 0;
+}
+
 } // namespace
 
 static jint nv(JNIEnv* env, jobject, jstring input) {
@@ -330,6 +370,66 @@ static jint nv(JNIEnv* env, jobject, jstring input) {
     return 1;
 }
 
+// 生成本机授权凭据（十六进制文本）。仅表示"本机曾完成一次合法校验"。
+static jstring mk(JNIEnv* env, jobject) {
+    uint8_t t[32];
+    qq(t);
+
+    char out[65];
+    for (int i = 0; i < 32; ++i) {
+        uint8_t hi = (uint8_t)((t[i] >> 4) & 0xF);
+        uint8_t lo = (uint8_t)(t[i] & 0xF);
+        out[i * 2] = (char)(hi < 10 ? ('0' + hi) : ('a' + (hi - 10)));
+        out[i * 2 + 1] = (char)(lo < 10 ? ('0' + lo) : ('a' + (lo - 10)));
+    }
+    out[64] = 0;
+    gc((uint8_t*)out, 64);
+
+    jstring r = env->NewStringUTF(out);
+    for (unsigned i = 0; i < sizeof(out); ++i) out[i] = 0;
+    for (unsigned i = 0; i < sizeof(t); ++i) t[i] = 0;
+    if (r == nullptr) env->ExceptionClear();
+    return r;
+}
+
+// 校验外部保存的凭据：解开后与本机重算值比对，一致则视为有效。
+static jint ck(JNIEnv* env, jobject, jstring input) {
+    if (input == nullptr) return 0;
+    const char* raw = env->GetStringUTFChars(input, nullptr);
+    if (raw == nullptr) { env->ExceptionClear(); return 0; }
+
+    std::string s(raw);
+    env->ReleaseStringUTFChars(input, raw);
+    if (s.size() != 64) return 0;
+
+    char b[65];
+    for (int i = 0; i < 64; ++i) b[i] = s[i];
+    b[64] = 0;
+    gc((uint8_t*)b, 64);
+
+    uint8_t got[32];
+    for (int i = 0; i < 32; ++i) {
+        int hi, lo;
+        char ch1 = b[i * 2];
+        char ch2 = b[i * 2 + 1];
+        if (ch1 >= '0' && ch1 <= '9') hi = ch1 - '0';
+        else if (ch1 >= 'a' && ch1 <= 'f') hi = ch1 - 'a' + 10;
+        else { for (unsigned k = 0; k < sizeof(b); ++k) b[k] = 0; return 0; }
+        if (ch2 >= '0' && ch2 <= '9') lo = ch2 - '0';
+        else if (ch2 >= 'a' && ch2 <= 'f') lo = ch2 - 'a' + 10;
+        else { for (unsigned k = 0; k < sizeof(b); ++k) b[k] = 0; return 0; }
+        got[i] = (uint8_t)((hi << 4) | lo);
+    }
+    for (unsigned k = 0; k < sizeof(b); ++k) b[k] = 0;
+
+    uint8_t exp[32];
+    qq(exp);
+    int ok = g4(got, exp) ? 1 : 0;
+    for (unsigned i = 0; i < sizeof(got); ++i) got[i] = 0;
+    for (unsigned i = 0; i < sizeof(exp); ++i) exp[i] = 0;
+    return ok;
+}
+
 extern "C" __attribute__((visibility("default"))) JNIEXPORT jint JNICALL
 JNI_OnLoad(JavaVM* vm, void*) {
     JNIEnv* env = nullptr;
@@ -340,6 +440,10 @@ JNI_OnLoad(JavaVM* vm, void*) {
     std::string cn = dstr(S_CLASS);
     std::string mn = dstr(S_NV);
     std::string ms = dstr(S_SIG);
+    std::string mkn = dstr(S_MK);
+    std::string mks = dstr(S_MKSIG);
+    std::string ckn = dstr(S_CK);
+    std::string cks = dstr(S_CKSIG);
 
     jclass c = env->FindClass(cn.c_str());
     if (c == nullptr) {
@@ -351,8 +455,14 @@ JNI_OnLoad(JavaVM* vm, void*) {
         { const_cast<char*>(mn.c_str()),
           const_cast<char*>(ms.c_str()),
           reinterpret_cast<void*>(nv) },
+        { const_cast<char*>(mkn.c_str()),
+          const_cast<char*>(mks.c_str()),
+          reinterpret_cast<void*>(mk) },
+        { const_cast<char*>(ckn.c_str()),
+          const_cast<char*>(cks.c_str()),
+          reinterpret_cast<void*>(ck) },
     };
-    if (env->RegisterNatives(c, m, 1) != JNI_OK) {
+    if (env->RegisterNatives(c, m, 3) != JNI_OK) {
         env->ExceptionClear();
     }
     env->DeleteLocalRef(c);

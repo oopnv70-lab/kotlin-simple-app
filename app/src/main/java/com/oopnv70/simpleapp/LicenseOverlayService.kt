@@ -185,6 +185,7 @@ class LicenseOverlayService : Service() {
                         // 验证通过
                         verified = true
                         markUnlocked()
+                        License.save(ctx)
                         Toast.makeText(ctx, getString(R.string.license_ok), Toast.LENGTH_SHORT).show()
                         hideOverlay()
                         // 通知 Activity 刷新

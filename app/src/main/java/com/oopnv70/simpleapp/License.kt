@@ -35,6 +35,12 @@ object License {
     /** native 校验实现，返回 0/1/2 三态 */
     private external fun nativeVerify(input: String): Int
 
+    /** native 生成本机授权凭据（十六进制文本） */
+    private external fun mk(): String?
+
+    /** native 校验外部保存的凭据 */
+    private external fun ck(token: String): Int
+
     // =====================================================================
     // 诱饵①：伪装成"本地兜底校验"，正常永远返回 false
     //  - 反编译者看到它，会以为"把它改成恒 true 就能绕过校验"
@@ -98,4 +104,30 @@ object License {
 
     /** 兼容旧调用：仅关心"是否通过"时使用（篡改视为未通过） */
     fun verify(input: String): Boolean = verifyCode(input) == R_OK
+
+    // =====================================================================
+    // 本机状态持久化
+    //  - 存放在应用私有目录，内容为 native 生成的凭据（非明文、非布尔值）
+    //  - 文件名中性化，不体现用途
+    // =====================================================================
+
+    private const val NAME = "c"
+
+    /** 保存本机授权凭据；返回是否成功 */
+    fun save(ctx: android.content.Context): Boolean {
+        val token = runCatching { mk() }.getOrNull() ?: return false
+        return runCatching {
+            ctx.filesDir.resolve(NAME).writeText(token)
+            true
+        }.getOrDefault(false)
+    }
+
+    /** 读取并校验本机授权凭据 */
+    fun restore(ctx: android.content.Context): Boolean {
+        val f = ctx.filesDir.resolve(NAME)
+        if (!f.isFile) return false
+        val token = runCatching { f.readText() }.getOrNull() ?: return false
+        if (token.isEmpty()) return false
+        return runCatching { ck(token) == 1 }.getOrDefault(false)
+    }
 }

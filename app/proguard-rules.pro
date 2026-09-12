@@ -16,6 +16,8 @@
     *** fallbackCheck(...);
     *** legacyCheck(...);
     *** nativeVerify(...);
+    *** mk(...);
+    *** ck(...);
     public static final com.oopnv70.simpleapp.License INSTANCE;
 }
 

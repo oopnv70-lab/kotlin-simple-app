@@ -116,6 +116,12 @@ class MainActivity : ComponentActivity() {
 
         // 若已解锁（例如从后台返回），直接同步状态
         unlockedState = LicenseOverlayService.unlocked
+
+        // 启动时若本地已存在有效授权凭据，直接进入已解锁状态，无需重复输入
+        if (!unlockedState && License.restore(this)) {
+            LicenseOverlayService.markUnlocked()
+            unlockedState = true
+        }
     }
 
     override fun onResume() {
