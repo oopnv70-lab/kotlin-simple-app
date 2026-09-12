@@ -62,10 +62,13 @@ jobs:
           ls "$ANDROID_HOME/platforms" 2>/dev/null || true
           ls "$ANDROID_HOME/build-tools" 2>/dev/null || true
 
-      - name: Set up Gradle 9.6
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '9.6'
+          # runner 已自带 Gradle 9.7.x；不指定版本，避免 setup-gradle
+          # 因"已存在更高版本"而拒绝安装并报错。
+          gradle-version: wrapper
+          validate-wrappers: false
 
       - name: Build Debug APK
         run: gradle :app:assembleDebug --stacktrace --no-daemon
