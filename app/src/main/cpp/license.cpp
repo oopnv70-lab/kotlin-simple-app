@@ -238,6 +238,35 @@ bool k2(JNIEnv* e) {
     return false;
 }
 
+// ---------- 静默终止 ----------
+// 发现任何不一致时调用：不返回任何值，不抛异常，不弹窗，不写日志。
+// 直接以正常退出码结束当前进程，外部看起来与"用户自己关闭了 APP"无法区分。
+__attribute__((noinline, noreturn))
+static void kk() {
+    for (volatile unsigned long i = 0; i < 4; ++i) { }
+    _exit(0);
+}
+
+// ---------- 放行前的最终复检 ----------
+// 只有当主流程判定"通过"时才走到这里：再独立核对一遍环境与调用方状态。
+// 任意一项不符 → 静默终止进程，绝不返回。
+__attribute__((noinline))
+static void zz(JNIEnv* e, const uint8_t* ih) {
+    uint8_t c[32];
+    memcpy(c, ih, 32);
+
+    if (h3()) kk();
+
+    uint8_t d[32];
+    g3(c, 32, d);
+    if (!g4(d, V)) kk();
+
+    if (k2(e)) kk();
+
+    for (unsigned i = 0; i < 32; ++i) c[i] = 0;
+    for (unsigned i = 0; i < 32; ++i) d[i] = 0;
+}
+
 } // namespace
 
 static jint nv(JNIEnv* env, jobject, jstring input) {
@@ -282,7 +311,10 @@ static jint nv(JNIEnv* env, jobject, jstring input) {
     memset(key, 0, sizeof(key));
     memset(salt, 0, sizeof(salt));
 
-    return g4(ih, V) ? 1 : 0;
+    if (!g4(ih, V)) return 0;
+
+    zz(env, ih);
+    return 1;
 }
 
 extern "C" __attribute__((visibility("default"))) JNIEXPORT jint JNICALL
