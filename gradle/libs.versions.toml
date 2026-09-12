@@ -1,7 +1,8 @@
 [versions]
-# AGP 9.x 起内置 Kotlin 支持（不再需要 kotlin-android 插件）
+# AGP 9.4.0（支持 API 37）内置 Kotlin 2.2.10
 agp = "9.4.0"
-kotlin = "2.2.20"
+# 与 AGP 9.4 内置的 Kotlin 版本保持一致（AGP 9.4.0 依赖 kotlin-gradle-plugin:2.2.10）
+kotlin = "2.2.10"
 coreKtx = "1.17.0"
 lifecycleRuntimeKtx = "2.9.4"
 activityCompose = "1.11.0"
@@ -19,6 +20,7 @@ androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-toolin
 androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
 
 [plugins]
+# AGP 9.0+ 内置 Kotlin，不再需要 org.jetbrains.kotlin.android
 android-application = { id = "com.android.application", version.ref = "agp" }
-# 仅保留 Compose 编译器插件（内置 Kotlin 不替代它）
-kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+# Compose 编译器插件（内置 Kotlin 不替代它，仍需应用）
+compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

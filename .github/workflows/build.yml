@@ -5,9 +5,6 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build:
     name: Build APK
@@ -26,52 +23,27 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Accept all licenses
-        run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+      - name: Accept licenses
+        run: yes | sdkmanager --licenses > /dev/null 2>&1 || true
 
-      - name: List available Android platforms (debug info)
+      - name: Install Android 17 platform (API 37)
         run: |
-          echo "===== available platforms ====="
-          sdkmanager --list 2>/dev/null | grep -E "platforms;android-" | head -60 || true
-          echo "===== available build-tools ====="
-          sdkmanager --list 2>/dev/null | grep -E "build-tools;" | head -40 || true
-
-      - name: Install SDK packages (auto-detect android-37)
-        run: |
-          set +e
-          # 先尝试直接用 android-37
-          sdkmanager --install "platforms;android-37" "build-tools;36.0.0" "platform-tools" >/tmp/inst.log 2>&1
-          RC=$?
-          if [ $RC -ne 0 ]; then
-            echo "android-37 直接安装失败，尝试从可用列表里找最接近的 37 平台包："
-            CAND=$(sdkmanager --list 2>/dev/null | grep -oE "platforms;android-[A-Za-z0-9.]+" | sort -u | grep -iE "37|Cinnamon|Baklava" | head -1)
-            echo "candidate = $CAND"
-            if [ -n "$CAND" ]; then
-              sdkmanager --install "$CAND" "platform-tools" "build-tools;36.0.0"
-            fi
-          fi
-          echo "--- last 40 lines of install log ---"
-          tail -40 /tmp/inst.log || true
+          # Android 17 的平台包名是 platforms;android-37.0（次要版本命名）
+          sdkmanager --install "platforms;android-37.0" "platform-tools" "build-tools;36.0.0"
           echo "--- installed platforms ---"
-          ls "$ANDROID_HOME/platforms" 2>/dev/null || true
-
-      - name: Show installed components
-        run: |
-          ls -la "$ANDROID_HOME" || true
-          ls "$ANDROID_HOME/platforms" 2>/dev/null || true
-          ls "$ANDROID_HOME/build-tools" 2>/dev/null || true
+          ls "$ANDROID_HOME/platforms"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          # runner 已自带 Gradle 9.7.x；不指定版本，避免 setup-gradle
-          # 因"已存在更高版本"而拒绝安装并报错。
-          gradle-version: wrapper
-          validate-wrappers: false
+
+      - name: Generate Gradle wrapper
+        run: gradle wrapper --gradle-version 9.7.1
 
       - name: Build Debug APK
-        run: gradle :app:assembleDebug --stacktrace --no-daemon
+        run: ./gradlew :app:assembleDebug --stacktrace --no-daemon
+
+      - name: Build Release APK
+        run: ./gradlew :app:assembleRelease --stacktrace --no-daemon
 
       - name: Collect APKs
         if: always()
