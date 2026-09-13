@@ -107,27 +107,69 @@ object License {
 
     // =====================================================================
     // 本机状态持久化
-    //  - 存放在应用私有目录，内容为 native 生成的凭据（非明文、非布尔值）
-    //  - 文件名中性化，不体现用途
+    //  - 按 Android 通用做法：优先使用外部私有目录
+    //    （Android/data/<包名>/files），不可用时回退内部私有目录（filesDir）
+    //  - 内容为 native 生成的凭据（非明文、非布尔值），文件名中性化
     // =====================================================================
 
     private const val NAME = "c"
 
+    /** 候选目录：外部私有目录优先，内部私有目录兜底（顺序即优先级） */
+    private fun dirs(ctx: android.content.Context): List<java.io.File> {
+        val out = ArrayList<java.io.File>(2)
+        runCatching { ctx.getExternalFilesDir(null) }.getOrNull()?.let { out.add(it) }
+        runCatching { ctx.filesDir }.getOrNull()?.let { out.add(it) }
+        return out
+    }
+
+    /** 找到已存在的凭据文件；找不到返回 null */
+    private fun find(ctx: android.content.Context): java.io.File? {
+        for (d in dirs(ctx)) {
+            val f = java.io.File(d, NAME)
+            if (f.isFile) return f
+        }
+        return null
+    }
+
     /** 保存本机授权凭据；返回是否成功 */
     fun save(ctx: android.content.Context): Boolean {
         val token = runCatching { mk() }.getOrNull() ?: return false
-        return runCatching {
-            ctx.filesDir.resolve(NAME).writeText(token)
-            true
-        }.getOrDefault(false)
+        val all = dirs(ctx)
+        for (d in all) {
+            val ok = runCatching {
+                if (!d.isDirectory) d.mkdirs()
+                if (!d.isDirectory) return@runCatching false
+                java.io.File(d, NAME).writeText(token)
+                true
+            }.getOrDefault(false)
+            if (ok) {
+                // 写入成功后，清掉其余目录里的同名旧文件，避免多份内容并存
+                for (other in all) {
+                    if (other != d) runCatching { java.io.File(other, NAME).delete() }
+                }
+                return true
+            }
+        }
+        return false
     }
 
     /** 读取并校验本机授权凭据 */
     fun restore(ctx: android.content.Context): Boolean {
-        val f = ctx.filesDir.resolve(NAME)
-        if (!f.isFile) return false
+        val f = find(ctx) ?: return false
         val token = runCatching { f.readText() }.getOrNull() ?: return false
         if (token.isEmpty()) return false
         return runCatching { ck(token) == 1 }.getOrDefault(false)
+    }
+
+    /** 清除已保存的凭据（用于调试/重置；不影响其他状态） */
+    fun clear(ctx: android.content.Context): Boolean {
+        var removed = false
+        for (d in dirs(ctx)) {
+            runCatching {
+                val f = java.io.File(d, NAME)
+                if (f.exists() && f.delete()) removed = true
+            }
+        }
+        return removed
     }
 }
